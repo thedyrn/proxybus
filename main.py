@@ -30,13 +30,59 @@ class Register:
     M = 'M_16b'
 
 
-class Plc:
-    fx1s = 'fx1s'
-    fx3u = 'fx3u'
+class Device:
+    @staticmethod
+    def request(register_type, register_offset, register_len):
+        raise NotImplemented
+
+
+class FX1S(Device):
+    @staticmethod
+    def request(register_type, register_offset, register_len):
+        if register_type == Register.D:
+            assert 0 < register_offset < 255
+
+            inputOffset = register_offset * 2
+            inputLen = register_len * 2
+            lst = [2, 0x30, 0x31] + bTh(inputOffset, 3) + bTh(inputLen, 2) + [3]
+            lst += sumCheck(lst)
+        else:
+            raise NotImplemented
+
+        req = bytes(lst)
+        print(req)
+        return req
+
+
+class FX3U(Device):
+    @staticmethod
+    def request(register_type, register_offset, register_len):
+        if register_type == Register.D:
+            assert 0 < register_offset < 7999
+
+            inputOffset = register_offset * 2
+            inputLen = register_len * 2
+            lst = [2, 0x45, 0x30, 0x30] + bTh(inputOffset, 4, 0x4000) + bTh(inputLen, 2) + [3]
+            lst += sumCheck(lst)
+
+        elif register_type == Register.M:
+            assert 0 < register_offset < 479
+
+            inputOffset = register_offset
+            inputLen = register_len * 2
+            lst = [2, 0x45, 0x30, 0x30, 0x38] + bTh(inputOffset, 3, 0x800) + bTh(inputLen, 2) + [3]
+            lst += sumCheck(lst)
+        else:
+            raise NotImplemented
+
+        req = bytes(lst)
+        print(req)
+        return req
 
 
 class Bus:
-    def __init__(self, ip_adr, tcp_port, timeout):
+    def __init__(self, device, ip_adr, tcp_port, timeout):
+        self.device = device
         self.address = (ip_adr, tcp_port)
         self.timeout = timeout
         self._sock = None
@@ -51,50 +97,20 @@ class Bus:
         return self._sock
 
     def close(self):
-        if self._sock:
+        if self._sock is not None:
             self._sock.close()
+            self._sock = None
 
-    def request(self, plc_type, register_type, register_offset, register_len) -> Response:
+    def request(self, register_type, register_offset, register_len) -> Response:
         try:
-            return self._request(plc_type, register_type, register_offset, register_len)
+            return self._request(register_type, register_offset, register_len)
         except Exception:
             self.close()
             raise
 
-    def _request(self, plc_type, register_type, register_offset, register_len) -> Response:
-        assert (register_len <= 0) or (register_len > 100)
-
-        if (plc_type == Plc.fx1s) and (register_type == Register.D):
-            assert (register_offset < 0) or (register_offset > 255)
-
-            inputOffset = register_offset * 2
-            inputLen = register_len*2
-            lst = [2, 0x30, 0x31] + bTh(inputOffset, 3) + bTh(inputLen, 2)+ [3]
-            lst += sumCheck(lst)
-            req = bytes(lst)
-            print(req)
-
-        elif (plc_type == Plc.fx3u) and (register_type == Register.D):
-            assert (register_offset < 0) or (register_offset > 7999)
-
-            inputOffset = register_offset * 2
-            inputLen = register_len*2
-            lst = [2, 0x45, 0x30, 0x30] + bTh(inputOffset, 4, 0x4000) + bTh(inputLen, 2)+ [3]
-            lst += sumCheck(lst)
-            req = bytes(lst)
-            print(req)
-
-        elif (plc_type == Plc.fx3u) and (register_type == Register.M):
-            assert (register_offset < 0) or (register_offset > 479)
-
-            inputOffset = register_offset
-            inputLen = register_len*2
-            lst = [2, 0x45, 0x30, 0x30, 0x38] + bTh(inputOffset, 3, 0x800) + bTh(inputLen, 2)+ [3]
-            lst += sumCheck(lst)
-            req = bytes(lst)
-            print(req)
-        else:
-            raise NotImplemented
+    def _request(self, register_type, register_offset, register_len) -> Response:
+        assert 0 <= register_len < 100
+        req = self.device.request(register_type, register_offset, register_len)
 
         self.sock.sendall(req)
 
@@ -111,5 +127,6 @@ class Bus:
 
 
 if __name__ == '__main__':
-    bus = Bus('localhost', 5556, 2)
-    print(bus.request(Plc.fx1s, Register.D, 250, 30).decode_16bit())
+    bus = Bus(FX1S, 'localhost', 5556, 2)
+    print(bus.request(Register.D, 250, 30).decode_16bit())
+    bus.close()
