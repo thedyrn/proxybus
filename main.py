@@ -7,6 +7,10 @@ class CheckSumFail(Exception):
     ...
 
 
+class OutOfRange(Exception):
+    ...
+
+
 class Response:
     def __init__(self, data):
         self.data = data
@@ -31,12 +35,29 @@ class Register:
 
 
 class Device:
+    MAP = {}
+
+    def __init__(self, request_map=None):
+        self.request_map = request_map or self.MAP
+
+    def modbus_request(self, address, count=1):
+        if address not in self.request_map:
+            raise OutOfRange
+
+        request_data = self.request_map[address]
+
+        assert 0 <= request_data[1] < 100
+
+        return self.request(*request_data)
+
     @staticmethod
     def request(register_type, register_offset, register_len):
         raise NotImplemented
 
 
 class FX1S(Device):
+    MAP = {}
+
     @staticmethod
     def request(register_type, register_offset, register_len):
         if register_type == Register.D:
@@ -55,6 +76,8 @@ class FX1S(Device):
 
 
 class FX3U(Device):
+    MAP = {}
+
     @staticmethod
     def request(register_type, register_offset, register_len):
         if register_type == Register.D:
@@ -81,7 +104,7 @@ class FX3U(Device):
 
 
 class Bus:
-    def __init__(self, device, ip_adr, tcp_port, timeout):
+    def __init__(self, device: Device, ip_adr, tcp_port, timeout):
         self.device = device
         self.address = (ip_adr, tcp_port)
         self.timeout = timeout
@@ -101,16 +124,15 @@ class Bus:
             self._sock.close()
             self._sock = None
 
-    def request(self, register_type, register_offset, register_len) -> Response:
+    def request(self, address, count=1) -> Response:
         try:
-            return self._request(register_type, register_offset, register_len)
+            return self._request(address, count)
         except Exception:
             self.close()
             raise
 
-    def _request(self, register_type, register_offset, register_len) -> Response:
-        assert 0 <= register_len < 100
-        req = self.device.request(register_type, register_offset, register_len)
+    def _request(self, address, count) -> Response:
+        req = self.device.modbus_request(address, count)
 
         self.sock.sendall(req)
 
@@ -127,6 +149,13 @@ class Bus:
 
 
 if __name__ == '__main__':
-    bus = Bus(FX1S, 'localhost', 5556, 2)
-    print(bus.request(Register.D, 250, 30).decode_16bit())
+    # Register.D, 250, 30
+    # register, offset, len
+    device = FX1S(
+        request_map={
+            255: (Register.D, 250, 30)
+        }
+    )
+    bus = Bus(device, 'localhost', 5556, 2)
+    print(bus.request(255).decode_16bit())
     bus.close()
