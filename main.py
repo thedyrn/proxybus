@@ -1,161 +1,102 @@
-import socket
+import logging
+from pymodbus.version import version
+from pymodbus.server.asynchronous import StartTcpServer
 
-from utils import sumCheckBytes, sumCheck, bTh
+from pymodbus.device import ModbusDeviceIdentification
+from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
 
+import config
+from plc_bus import Bus as PlcBus, FX1S, Register
+from modbus import RemoteDataBlock
 
-class CheckSumFail(Exception):
-    ...
-
-
-class OutOfRange(Exception):
-    ...
-
-
-class Response:
-    def __init__(self, data):
-        self.data = data
-
-    def decode_16bit(self):
-        sc = bytes(sumCheckBytes(self.data))
-        if self.data[-2:] != sc:
-            raise CheckSumFail
-
-        bb = bytes.fromhex(self.data[1:-3].decode('utf-8'))
-        out = []
-        i = 0
-        while i < len(bb):
-            out += [bb[i + 1] * 256 + bb[i]]
-            i += 2
-        return out
+FORMAT = ('%(asctime)-15s %(threadName)-15s'
+          ' %(levelname)-8s %(module)-15s:%(lineno)-8s %(message)s')
+logging.basicConfig(format=FORMAT)
+log = logging.getLogger()
+log.setLevel(logging.DEBUG)
 
 
-class Register:
-    D = 'D'
-    M = 'M_16b'
-
-
-class Device:
-    MAP = {}
-
-    def __init__(self, request_map=None):
-        self.request_map = request_map or self.MAP
-
-    def modbus_request(self, address, count=1):
-        if address not in self.request_map:
-            raise OutOfRange
-
-        request_data = self.request_map[address]
-
-        assert 0 <= request_data[1] < 100
-
-        return self.request(*request_data)
-
-    @staticmethod
-    def request(register_type, register_offset, register_len):
-        raise NotImplemented
-
-
-class FX1S(Device):
-    MAP = {}
-
-    @staticmethod
-    def request(register_type, register_offset, register_len):
-        if register_type == Register.D:
-            assert 0 < register_offset < 255
-
-            inputOffset = register_offset * 2
-            inputLen = register_len * 2
-            lst = [2, 0x30, 0x31] + bTh(inputOffset, 3) + bTh(inputLen, 2) + [3]
-            lst += sumCheck(lst)
-        else:
-            raise NotImplemented
-
-        req = bytes(lst)
-        print(req)
-        return req
-
-
-class FX3U(Device):
-    MAP = {}
-
-    @staticmethod
-    def request(register_type, register_offset, register_len):
-        if register_type == Register.D:
-            assert 0 < register_offset < 7999
-
-            inputOffset = register_offset * 2
-            inputLen = register_len * 2
-            lst = [2, 0x45, 0x30, 0x30] + bTh(inputOffset, 4, 0x4000) + bTh(inputLen, 2) + [3]
-            lst += sumCheck(lst)
-
-        elif register_type == Register.M:
-            assert 0 < register_offset < 479
-
-            inputOffset = register_offset
-            inputLen = register_len * 2
-            lst = [2, 0x45, 0x30, 0x30, 0x38] + bTh(inputOffset, 3, 0x800) + bTh(inputLen, 2) + [3]
-            lst += sumCheck(lst)
-        else:
-            raise NotImplemented
-
-        req = bytes(lst)
-        print(req)
-        return req
-
-
-class Bus:
-    def __init__(self, device: Device, ip_adr, tcp_port, timeout):
-        self.device = device
-        self.address = (ip_adr, tcp_port)
-        self.timeout = timeout
-        self._sock = None
-
-    @property
-    def sock(self):
-        if self._sock is None:
-            self._sock = socket.socket()
-            self._sock.settimeout(self.timeout)
-            self._sock.connect(self.address)
-
-        return self._sock
-
-    def close(self):
-        if self._sock is not None:
-            self._sock.close()
-            self._sock = None
-
-    def request(self, address, count=1) -> Response:
-        try:
-            return self._request(address, count)
-        except Exception:
-            self.close()
-            raise
-
-    def _request(self, address, count) -> Response:
-        req = self.device.modbus_request(address, count)
-
-        self.sock.sendall(req)
-
-        data = b''
-
-        while True:
-            data += self.sock.recv(256)
-            if data[-3] == 3:
-                break
-
-        print(data)
-
-        return Response(data)
-
-
-if __name__ == '__main__':
-    # Register.D, 250, 30
-    # register, offset, len
+def run_async_server(modbus_address, plc_address, timeout=2):
     device = FX1S(
         request_map={
-            255: (Register.D, 250, 30)
+            range(8000): lambda address: (Register.D, address)
         }
     )
-    bus = Bus(device, 'localhost', 5556, 2)
-    print(bus.request(255).decode_16bit())
-    bus.close()
+    bus = PlcBus(device=device, ip_adr=plc_address[0], tcp_port=plc_address[1], timeout=timeout)
+    slave_1 = ModbusSlaveContext(
+        hr=RemoteDataBlock(bus),
+        ir=RemoteDataBlock(bus),
+        zero_mode=False  # начинаем адрес с 1
+    )
+    context = ModbusServerContext(slaves=slave_1, single=True)
+    # slave_2 = ModbusSlaveContext(
+    #     hr=RemoteDataBlock(bus),
+    #     ir=RemoteDataBlock(bus),
+    #     zero_mode=True
+    # )
+    #
+    # context = ModbusServerContext(
+    #     slaves={0x00: slave_1, 0x01: slave_2},  # slave_id и соответствующий slave context
+    #     single=False  # несколько слейв айди
+    # )
+
+    identity = ModbusDeviceIdentification()
+    identity.VendorName = 'Proxybus'
+    identity.ProductCode = 'PB'
+    identity.VendorUrl = 'https://github.com/thedyrn/proxybus'
+    identity.ProductName = 'Proxybus Server'
+    identity.ModelName = 'Proxybus Server Alpha 1'
+    identity.MajorMinorRevision = version.short()
+
+    try:
+        StartTcpServer(context, identity=identity, address=modbus_address)
+    except BaseException as e:
+        bus.close()
+        raise e
+
+    # TCP Server with deferred reactor run
+
+    # from twisted.internet import reactor
+    # StartTcpServer(context, identity=identity, address=("localhost", 5020),
+    #                defer_reactor_run=True)
+    # reactor.run()
+
+    # Server with RTU framer
+    # StartTcpServer(context, identity=identity, address=("localhost", 5020),
+    #                framer=ModbusRtuFramer)
+
+    # UDP Server
+    # StartUdpServer(context, identity=identity, address=("127.0.0.1", 5020))
+
+    # RTU Server
+    # StartSerialServer(context, identity=identity,
+    #                   port='/dev/ttyp0', framer=ModbusRtuFramer)
+
+    # ASCII Server
+    # StartSerialServer(context, identity=identity,
+    #                   port='/dev/ttyp0', framer=ModbusAsciiFramer)
+
+    # Binary Server
+    # StartSerialServer(context, identity=identity,
+    #                   port='/dev/ttyp0', framer=ModbusBinaryFramer)
+
+
+if __name__ == "__main__":
+    if not config.multi_device:
+        modbus_address = config.BRIDGES[0]['modbus_address']
+        plc_address = config.BRIDGES[0]['plc_address']
+        timeout = config.BRIDGES[0]['timeout']
+        run_async_server(modbus_address, plc_address, timeout)
+    else:
+        import threading as th
+        threads = []
+        for bridge in config.BRIDGES:
+            thread = th.Thread(
+                target=run_async_server,
+                args=(bridge['modbus_address'], bridge['plc_address'], bridge['timeout'],)
+            )
+            threads.append(thread)
+            thread.daemon = True
+            thread.start()
+
+        cmd = input()
