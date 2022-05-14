@@ -1,6 +1,7 @@
 from pymodbus.datastore.store import BaseModbusDataBlock
 
-from plc_bus import Bus as PlcBus, PlcError
+from plc_bus import Bus as PlcBus
+from plc_exceptions import OutOfRange as PlcOutOfRange, CheckSumFail as PlcCheckSumFail
 
 
 class ModbusError(Exception):
@@ -47,7 +48,7 @@ class RemoteDataBlock(BaseModbusDataBlock):
         :returns: True if the request in within range, False otherwise
         """
 
-        return any([address in _range for _range in self.plc_bus.device.request_map.keys()])
+        return self.plc_bus.device.validate_request(address, count)
 
     def getValues(self, address, count=1):
         """ Returns the requested values from the datastore
@@ -58,9 +59,13 @@ class RemoteDataBlock(BaseModbusDataBlock):
         """
 
         try:
-            return self.plc_bus.request(address, count).decode_16bit()
-        except PlcBus as e:
-            return
+            return self.plc_bus.request(address, count)
+        except PlcCheckSumFail as e:
+            raise CheckSumFail from e
+        except PlcOutOfRange as e:
+            raise OutOfRange from e
+        except Exception as e:
+            raise ModbusError from e
 
     def setValues(self, address, values):
         """ Sets the requested values from the datastore
