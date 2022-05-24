@@ -28,7 +28,7 @@ def run_async_server():
         slaves[bridge['slave_id']] = ModbusSlaveContext(
             hr=RemoteDataBlock(bus),
             ir=RemoteDataBlock(bus),
-            zero_mode=False  # начинаем адрес с 1
+            zero_mode=True  # начинаем адрес с 0
         )
 
     context = ModbusServerContext(slaves=slaves, single=False)

@@ -1,7 +1,7 @@
 import socket
 import typing as t
 
-from devices.base import Device, Register
+from devices.base import Device, Register, Request
 from devices.fx1s import FX1S
 
 
@@ -26,28 +26,28 @@ class Bus:
             self._sock.close()
             self._sock = None
 
-    def request(self, address, count=1) -> str:
+    def request(self, address, count=1) -> list:
         try:
             return self._request(address, count)
         except Exception:
             self.close()
             raise
 
-    def _request(self, address, count) -> str:
-        req = self.device.encode(address, count)
+    def _request(self, address, count) -> list:
+        req: Request = self.device.encode(address, count)
 
-        self.sock.sendall(req)
+        self.sock.sendall(req.request_data)
 
         data = b''
 
         while True:
             data += self.sock.recv(256)
-            if data[-3] == 3:
+            if len(data) > 3 and data[-3] == 3:
                 break
 
         print(data)
 
-        return self.device.decode(data)
+        return self.device.decode(request=req, response_data=data)
 
 
 if __name__ == '__main__':
